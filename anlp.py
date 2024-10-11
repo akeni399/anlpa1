@@ -6,10 +6,10 @@ import math
 from collections import defaultdict
 
 
-tri_counts=defaultdict(int) #counts of all trigrams in input
+tri_counts = defaultdict(int) #counts of all trigrams in input
+bi_counts = defaultdict(int)
+vocabLength = [0]
 
-
-#this function currently does nothing.
 def preprocess_line(line):
     ans = ""
     accepted_chars = "abcdefghijklmnopqrstuvwxyz. "
@@ -22,22 +22,13 @@ def preprocess_line(line):
     return ans
 
 
-
-
-#here we make sure the user provides a training filename when
-#calling this program, otherwise exit with a usage error.
-if len(sys.argv) != 3:
+if len(sys.argv) != 2:
     print("Usage: ", sys.argv[0], "<training_file>")
     sys.exit(1)
 
-infile = sys.argv[1] #get input argument: the training file
-model = sys.argv[2]
+infile = sys.argv[1]
 
-#This bit of code gives an example of how you might extract trigram counts
-#from a file, line by line. If you plan to use or modify this code,
-#please ensure you understand what it is actually doing, especially at the
-#beginning and end of each line. Depending on how you write the rest of
-#your program, you may need to modify this code.
+# reading sample line by line
 with open(infile) as f:
     for line in f:
         line = preprocess_line(line) 
@@ -46,61 +37,48 @@ with open(infile) as f:
             tri_counts[trigram] += 1
 
 
-model2 = []
-with open(model) as f:
-    for line in f:
-        line = line[:-1]
-        trigram = line[:3]
-        prob = line[4:]
-        model2.append((trigram, float(prob)))
-#print(model2)
-
-
-#Some example code that prints out the counts. For small input files
-#the counts are easy to look at but for larger files you can redirect
-#to an output file (see Lab 1).
-#print("Trigram counts in ", infile, ", sorted alphabetically:")
-#for trigram in sorted(tri_counts.keys()):
-    #print(trigram, ": ", tri_counts[trigram])
-#print("Trigram counts in ", infile, ", sorted numerically:")
-#for tri_count in sorted(tri_counts.items(), key=lambda x:x[1], reverse = True):
-    #p#rint(tri_count[0], ": ", str(tri_count[1]))
+def build_trigram_prob_from_LM(model):
+    trigram_probs = defaultdict(int)
+    bi_counts_from_model = defaultdict(int)
+    with open(model) as f:
+        for line in f:
+            line = line[:-1]
+            trigram = line[:3]
+            prob = line[4:]
+            trigram_probs[trigram] = float(prob)
+            bi_counts_from_model[trigram[:2]] += 1
+    return trigram_probs, bi_counts_from_model
 
 
 def build_trigram(tri_counts):
-    bigram_counts = defaultdict(int)
     vocab  = set()
     for trigram, count in tri_counts.items():
         bigram = trigram[:2]
-        bigram_counts[bigram]+=count
+        bi_counts[bigram]+=count
         vocab.update(bigram)
 
-    length = len(vocab)
-    print(length)
-    
-    trigram_probs = []
+    vocabLength[0] = len(vocab)
+    trigram_probs = defaultdict(int)
     for trigram, count in tri_counts.items():
         bigram = trigram[:2]
-        prob = (count+1)/(bigram_counts[bigram]+length)
-        trigram_probs.append((trigram, prob))
-    
-    
-    #print(trigram_probs)
+        prob = (count+1)/(bi_counts[bigram]+vocabLength[0])
+        trigram_probs[trigram] = prob
 
     return trigram_probs
 
-res = build_trigram(tri_counts)
-
-# change start to random
-
-def generate_from_LM(trigram_prob, start, length):
-    output = start
-    cur = start
+def generate_from_LM(trigram_prob, length, bigram_counts):
+    start_bigram = random.choice(list(bigram_counts.keys()))
+    output = start_bigram
+    cur = output
     for _ in range(length-2):
-        possibilities = [trigram for trigram, prob in trigram_prob if trigram.startswith(cur)]
+        possibilities = [(trigram, prob) for trigram, prob in trigram_prob.items() if trigram.startswith(cur)]
         if not possibilities:
             break
-        probs = [prob for trigram, prob in trigram_prob if trigram.startswith(cur)]
+        if len(output) < length-1:
+            possibilities = [(trigram, prob) for trigram, prob in possibilities if trigram[2]!='#']
+            if not possibilities:
+                break
+        possibilities, probs = zip(*possibilities)
         total_prob = sum(probs)
         normalized = [prob/total_prob for prob in probs]
         next = random.choices(possibilities, weights = normalized)[0]
@@ -108,21 +86,40 @@ def generate_from_LM(trigram_prob, start, length):
         cur = next[1:]
     return output
 
-sentence = generate_from_LM(res, 'th', 300)
+    
+
+trigram_probs = build_trigram(tri_counts)
+model_trigram_probs, model_bigram_counts = build_trigram_prob_from_LM('./model-br.en')
+
+
+sentence = generate_from_LM(trigram_probs, 300, bi_counts)
 print(sentence)
-#print(generate_from_LM(model2, 'th', 300))
+sentence_model= generate_from_LM(model_trigram_probs, 300, model_bigram_counts)
+print(sentence_model)
 
 
-def perplexity(sentence, trigram_prob):
+# solve division by 0 error
+def perplexity(testfile, trigram_prob):
+    sentence = '##abaab#'
+    # with open(testfile) as f:
+    #     for line in f:
+    #         sentence+=preprocess_line(line)
+
+        
     log_prob_sum = 0
-    for i in range(2, len(sentence)):
-        bigram = sentence[i-2:i]
-        nextCh = sentence[i]
-        curTrigram = bigram+nextCh
-        prob = next((prob for trig, prob in trigram_prob if trig==curTrigram), 0)
-        log_prob_sum+=math.log2(prob) if prob > 0 else float('-inf')
+    for i in range(len(sentence)-2):
+        trigram = sentence[i:i+3]
+        bigram = trigram[:2]
+        if trigram in trigram_prob:
+            prob = trigram_prob[trigram]
+        else:
+            prob = (tri_counts[trigram]+1)/(bi_counts[bigram]+vocabLength[0])
+        log_prob_sum+=math.log2(prob)
 
     perplexity = 2**(-log_prob_sum/(len(sentence)-2))
     return perplexity
 
-print(perplexity(sentence, res))
+
+print(perplexity('./test', trigram_probs))
+print()
+trigram_hash, bigram_hash = build_trigram_prob_from_LM('./training2.en')
